@@ -1,597 +1,680 @@
-// THE WEDNESDAY WIRE — v4
-// Sum up Wednesday 25 November 2026 in one image. 50 stories: 3 heroes + 6 mids + 41 briefs.
-// Fresh build. Node stdlib only (own 5x7 bitmap font + own PNG encoder via node:zlib).
-// v4 fixes vs v3: Cairo grey pillar removed (it read like a building); dashed Ring Road line
-// added under the tanker; date-check note moved directly under the last GLOBAL brief and the
-// dead band between briefs and footer closed; Macy's balloon face cleaned up with ropes to
-// hands; Houthis refinery redrawn as tanks + flare stack + smoke + drone with red X (no longer
-// a bar chart); UK meter flame redrawn as a proper teardrop; tariff ship given a hull + bridge.
-import { deflateSync } from 'node:zlib';
-import { writeFileSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+// THE WEDNESDAY WIRE — v5
+// Sum up Wednesday 25 November 2026 in one image. 50 stories, tariff lead.
+// Fresh build: own 5x7 bitmap font + own PNG encoder, Node stdlib only.
+// v5 fixes vs v4: H3 headline re-wrapped (no dangling "ORBIT"), refinery
+// flare stack reads as a flare (thicker stack, bigger flame, tank context),
+// Kospi chip scene strengthened (wafer + bigger chip + thicker red arrow),
+// footer bottom margin tightened (~26px -> ~15px).
+import { writeFileSync, mkdirSync } from "node:fs";
+import { deflateSync } from "node:zlib";
 
-// ---------------------------------------------------------------- CRC32 + PNG
-const CRC_T = (() => {
-  const t = new Int32Array(256);
-  for (let n = 0; n < 256; n++) {
-    let c = n;
-    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
-    t[n] = c;
+const W = 1024;
+const H = 1024;
+
+type RGBA = [number, number, number, number];
+const NAVY: RGBA = [14, 27, 51, 255];
+const NAVY2: RGBA = [24, 44, 78, 255];
+const PAPER: RGBA = [247, 243, 232, 255];
+const CREAM: RGBA = [245, 230, 200, 255];
+const INK: RGBA = [20, 20, 20, 255];
+const GREY: RGBA = [90, 90, 90, 255];
+const WHITE: RGBA = [255, 255, 255, 255];
+const YELLOW: RGBA = [255, 210, 62, 255];
+const GOLD: RGBA = [255, 210, 62, 255];
+const RED: RGBA = [216, 35, 42, 255];
+const REDDK: RGBA = [178, 24, 30, 255];
+const GREEN: RGBA = [46, 125, 50, 255];
+const GREENLT: RGBA = [223, 242, 223, 255];
+const BLUE: RGBA = [43, 108, 176, 255];
+const BLUELT: RGBA = [207, 227, 242, 255];
+const SKY: RGBA = [214, 232, 245, 255];
+const ORANGE: RGBA = [240, 120, 20, 255];
+const FLAMEY: RGBA = [255, 190, 40, 255];
+const TEAL: RGBA = [14, 122, 107, 255];
+const PURPLE: RGBA = [106, 79, 163, 255];
+const BROWN: RGBA = [141, 110, 47, 255];
+const WHYBG: RGBA = [255, 244, 180, 255];
+const MIDGREY: RGBA = [232, 232, 232, 255];
+
+let TRUNCATIONS = 0;
+
+// ---------- canvas ----------
+const canvas = Buffer.alloc(W * H * 4);
+function px(x: number, y: number, c: RGBA): void {
+  if (x < 0 || y < 0 || x >= W || y >= H) return;
+  const i = (y * W + x) * 4;
+  canvas[i] = c[0]; canvas[i + 1] = c[1]; canvas[i + 2] = c[2]; canvas[i + 3] = c[3];
+}
+function fillRect(x: number, y: number, w: number, h: number, c: RGBA): void {
+  const x0 = Math.max(0, Math.floor(x)), y0 = Math.max(0, Math.floor(y));
+  const x1 = Math.min(W, Math.ceil(x + w)), y1 = Math.min(H, Math.ceil(y + h));
+  for (let yy = y0; yy < y1; yy++) {
+    for (let xx = x0; xx < x1; xx++) px(xx, yy, c);
   }
-  return t;
-})();
+}
+function hline(x0: number, x1: number, y: number, c: RGBA): void {
+  for (let x = Math.min(x0, x1); x <= Math.max(x0, x1); x++) px(x, y, c);
+}
+function vline(x: number, y0: number, y1: number, c: RGBA): void {
+  for (let y = Math.min(y0, y1); y <= Math.max(y0, y1); y++) px(x, y, c);
+}
+function fillCircle(cx: number, cy: number, r: number, c: RGBA): void {
+  for (let y = Math.floor(cy - r); y <= Math.ceil(cy + r); y++) {
+    const dy = y - cy;
+    const dx = Math.sqrt(Math.max(0, r * r - dy * dy));
+    hline(Math.ceil(cx - dx), Math.floor(cx + dx), y, c);
+  }
+}
+function fillEllipse(cx: number, cy: number, rx: number, ry: number, c: RGBA): void {
+  for (let y = Math.floor(cy - ry); y <= Math.ceil(cy + ry); y++) {
+    const dy = (y - cy) / ry;
+    const dx = rx * Math.sqrt(Math.max(0, 1 - dy * dy));
+    hline(Math.ceil(cx - dx), Math.floor(cx + dx), y, c);
+  }
+}
+function ring(cx: number, cy: number, r: number, t: number, c: RGBA): void {
+  for (let y = Math.floor(cy - r - t); y <= Math.ceil(cy + r + t); y++) {
+    for (let x = Math.floor(cx - r - t); x <= Math.ceil(cx + r + t); x++) {
+      const d = Math.sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy));
+      if (d >= r - t && d <= r + t) px(x, y, c);
+    }
+  }
+}
+// thick line via stamped squares
+function thickLine(x0: number, y0: number, x1: number, y1: number, w: number, c: RGBA): void {
+  const dx = x1 - x0, dy = y1 - y0;
+  const steps = Math.max(Math.abs(dx), Math.abs(dy), 1);
+  const half = Math.floor(w / 2);
+  for (let i = 0; i <= steps; i++) {
+    const x = Math.round(x0 + (dx * i) / steps);
+    const y = Math.round(y0 + (dy * i) / steps);
+    fillRect(x - half, y - half, w, w, c);
+  }
+}
+function polyFill(pts: Array<[number, number]>, c: RGBA): void {
+  let minY = Infinity, maxY = -Infinity;
+  for (const p of pts) { minY = Math.min(minY, p[1]); maxY = Math.max(maxY, p[1]); }
+  for (let y = Math.floor(minY); y <= Math.ceil(maxY); y++) {
+    const xs: number[] = [];
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i], b = pts[(i + 1) % pts.length];
+      if ((a[1] <= y && b[1] > y) || (b[1] <= y && a[1] > y)) {
+        const t = (y - a[1]) / (b[1] - a[1]);
+        xs.push(a[0] + t * (b[0] - a[0]));
+      }
+    }
+    xs.sort((p, q) => p - q);
+    for (let k = 0; k + 1 < xs.length; k += 2) {
+      hline(Math.ceil(xs[k]), Math.floor(xs[k + 1]), y, c);
+    }
+  }
+}
+function star(cx: number, cy: number, r: number, c: RGBA): void {
+  const pts: Array<[number, number]> = [];
+  for (let i = 0; i < 10; i++) {
+    const ang = -Math.PI / 2 + (i * Math.PI) / 5;
+    const rad = i % 2 === 0 ? r : r * 0.45;
+    pts.push([cx + rad * Math.cos(ang), cy + rad * Math.sin(ang)]);
+  }
+  polyFill(pts, c);
+}
+function flame(cx: number, yBase: number, w: number, h: number): void {
+  // teardrop flame: outer orange, inner yellow
+  polyFill([
+    [cx, yBase - h],
+    [cx + w * 0.55, yBase - h * 0.45],
+    [cx + w * 0.42, yBase],
+    [cx - w * 0.42, yBase],
+    [cx - w * 0.55, yBase - h * 0.45],
+  ], ORANGE);
+  polyFill([
+    [cx, yBase - h * 0.62],
+    [cx + w * 0.3, yBase - h * 0.3],
+    [cx + w * 0.22, yBase],
+    [cx - w * 0.22, yBase],
+    [cx - w * 0.3, yBase - h * 0.3],
+  ], FLAMEY);
+}
+
+// ---------- PNG encoder ----------
+const CRC_TABLE: number[] = [];
+for (let n = 0; n < 256; n++) {
+  let c = n;
+  for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+  CRC_TABLE[n] = c >>> 0;
+}
 function crc32(buf: Buffer): number {
-  let c = 0xFFFFFFFF;
-  for (let i = 0; i < buf.length; i++) c = CRC_T[(c ^ buf[i]) & 0xFF] ^ (c >>> 8);
-  return (c ^ 0xFFFFFFFF) >>> 0;
+  let c = 0xffffffff;
+  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
 }
 function pngChunk(type: string, data: Buffer): Buffer {
-  const len = Buffer.alloc(4);
-  len.writeUInt32BE(data.length);
-  const td = Buffer.concat([Buffer.from(type, 'ascii'), data]);
-  const crc = Buffer.alloc(4);
-  crc.writeUInt32BE(crc32(td) >>> 0);
-  return Buffer.concat([len, td, crc]);
+  const out = Buffer.alloc(12 + data.length);
+  out.writeUInt32BE(data.length, 0);
+  out.write(type, 4, "ascii");
+  data.copy(out, 8);
+  out.writeUInt32BE(crc32(Buffer.concat([Buffer.from(type, "ascii"), data])), 8 + data.length);
+  return out;
 }
-function encodePNG(w: number, h: number, rgba: Buffer): Buffer {
-  const raw = Buffer.alloc(h * (1 + w * 4));
-  for (let y = 0; y < h; y++) {
-    raw[y * (1 + w * 4)] = 0;
-    rgba.copy(raw, y * (1 + w * 4) + 1, y * w * 4, (y + 1) * w * 4);
+function encodePNG(): Buffer {
+  const raw = Buffer.alloc(H * (1 + W * 4));
+  for (let y = 0; y < H; y++) {
+    raw[y * (1 + W * 4)] = 0;
+    canvas.copy(raw, y * (1 + W * 4) + 1, y * W * 4, (y + 1) * W * 4);
   }
-  const idat = deflateSync(raw, { level: 9 });
   const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(w, 0);
-  ihdr.writeUInt32BE(h, 4);
+  ihdr.writeUInt32BE(W, 0); ihdr.writeUInt32BE(H, 4);
   ihdr[8] = 8; ihdr[9] = 6; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
+  const idat = deflateSync(raw, { level: 9 });
   return Buffer.concat([
-    Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]),
-    pngChunk('IHDR', ihdr), pngChunk('IDAT', idat), pngChunk('IEND', Buffer.alloc(0)),
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    pngChunk("IHDR", ihdr),
+    pngChunk("IDAT", idat),
+    pngChunk("IEND", Buffer.alloc(0)),
   ]);
 }
 
-// ---------------------------------------------------------------- canvas
-const W = 1024, H = 1024;
-type C = [number, number, number];
-const PAPER: C = [247, 243, 232];
-const INK: C = [17, 17, 17];
-const NAVY: C = [20, 38, 63];
-const NAVY2: C = [14, 42, 71];
-const RED: C = [216, 35, 42];
-const YELLOW: C = [245, 197, 24];
-const PALEY: C = [255, 243, 176];
-const SLATE: C = [90, 107, 124];
-const SKY: C = [214, 234, 248];
-const SAND: C = [245, 230, 200];
-const BRICK: C = [181, 103, 63];
-const MORTAR: C = [138, 74, 46];
-const GREY: C = [154, 160, 166];
-const DGREY: C = [60, 60, 60];
-const GREEN: C = [46, 158, 91];
-const LGREEN: C = [223, 242, 227];
-const LGREY: C = [232, 232, 232];
-const WHITE: C = [255, 255, 255];
-const BLACK: C = [0, 0, 0];
-const ORANGE: C = [232, 106, 24];
-const GOLD: C = [212, 160, 23];
-const BLUE: C = [46, 111, 183];
-const TEAL: C = [0, 120, 120];
-const PURPLE: C = [100, 60, 140];
-const AGREEN: C = [0, 110, 60];
-const BROWN: C = [140, 90, 30];
-const RULE: C = [200, 190, 170];
-const LTEXT: C = [170, 180, 195];
-
-const img = Buffer.alloc(W * H * 4);
-for (let i = 0; i < W * H; i++) { img[i * 4] = PAPER[0]; img[i * 4 + 1] = PAPER[1]; img[i * 4 + 2] = PAPER[2]; img[i * 4 + 3] = 255; }
-
-function px(x: number, y: number, c: C): void {
-  if (x < 0 || y < 0 || x >= W || y >= H) return;
-  const i = (y * W + x) * 4;
-  img[i] = c[0]; img[i + 1] = c[1]; img[i + 2] = c[2]; img[i + 3] = 255;
-}
-function rect(x: number, y: number, w: number, h: number, c: C): void {
-  for (let j = y; j < y + h; j++) for (let i = x; i < x + w; i++) px(i, j, c);
-}
-function line(x0: number, y0: number, x1: number, y1: number, c: C, th = 1): void {
-  const dx = x1 - x0, dy = y1 - y0, steps = Math.max(Math.abs(dx), Math.abs(dy), 1);
-  for (let s = 0; s <= steps; s++) {
-    const x = Math.round(x0 + dx * s / steps), y = Math.round(y0 + dy * s / steps);
-    rect(x - Math.floor(th / 2), y - Math.floor(th / 2), th, th, c);
-  }
-}
-function circle(cx: number, cy: number, r: number, c: C): void {
-  for (let dy = -r; dy <= r; dy++) {
-    const dx = Math.floor(Math.sqrt(r * r - dy * dy));
-    for (let x = cx - dx; x <= cx + dx; x++) px(x, cy + dy, c);
-  }
-}
-function ring(cx: number, cy: number, r: number, th: number, c: C, bg: C): void {
-  circle(cx, cy, r, c);
-  circle(cx, cy, r - th, bg);
-}
-function ellipse(cx: number, cy: number, rx: number, ry: number, c: C): void {
-  for (let dy = -ry; dy <= ry; dy++) {
-    const dx = Math.floor(rx * Math.sqrt(1 - (dy * dy) / (ry * ry)));
-    for (let x = cx - dx; x <= cx + dx; x++) px(x, cy + dy, c);
-  }
-}
-function tri(x0: number, y0: number, x1: number, y1: number, x2: number, y2: number, c: C): void {
-  const minY = Math.min(y0, y1, y2), maxY = Math.max(y0, y1, y2);
-  const edges = [[x0, y0, x1, y1], [x1, y1, x2, y2], [x2, y2, x0, y0]];
-  for (let y = minY; y <= maxY; y++) {
-    const xs: number[] = [];
-    for (const [ax, ay, bx, by] of edges) {
-      if ((ay <= y && by > y) || (by <= y && ay > y)) xs.push(Math.round(ax + (y - ay) * (bx - ax) / (by - ay)));
-    }
-    if (xs.length >= 2) {
-      const a = Math.min(...xs), b = Math.max(...xs);
-      for (let x = a; x <= b; x++) px(x, y, c);
-    }
-  }
-}
-function star(cx: number, cy: number, r: number, c: C): void {
-  const pts: [number, number][] = [];
-  for (let i = 0; i < 10; i++) {
-    const ang = -Math.PI / 2 + i * Math.PI / 5;
-    const rr = i % 2 === 0 ? r : r * 0.45;
-    pts.push([cx + Math.round(rr * Math.cos(ang)), cy + Math.round(rr * Math.sin(ang))]);
-  }
-  for (let i = 1; i < 9; i++) tri(cx, cy, pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1], c);
-  tri(cx, cy, pts[9][0], pts[9][1], pts[0][0], pts[0][1], c);
-}
-function flame(x: number, yBase: number, s: number, c1: C, c2: C): void {
-  tri(x - s, yBase, x + s, yBase, x, yBase - Math.round(s * 2.2), c1);
-  tri(x - Math.round(s * 0.5), yBase, x + Math.round(s * 0.5), yBase, x, yBase - Math.round(s * 1.2), c2);
-}
-
-// ---------------------------------------------------------------- 5x7 bitmap font
-const GLYPHS: Record<string, string[]> = {
-  'A': ['.###.', '#...#', '#...#', '#####', '#...#', '#...#', '#...#'],
-  'B': ['####.', '#...#', '#...#', '####.', '#...#', '#...#', '####.'],
-  'C': ['.####', '#....', '#....', '#....', '#....', '#....', '.####'],
-  'D': ['####.', '#...#', '#...#', '#...#', '#...#', '#...#', '####.'],
-  'E': ['#####', '#....', '#....', '####.', '#....', '#....', '#####'],
-  'F': ['#####', '#....', '#....', '####.', '#....', '#....', '#....'],
-  'G': ['.####', '#....', '#....', '#.###', '#...#', '#...#', '.###.'],
-  'H': ['#...#', '#...#', '#...#', '#####', '#...#', '#...#', '#...#'],
-  'I': ['#####', '..#..', '..#..', '..#..', '..#..', '..#..', '#####'],
-  'J': ['..###', '...#.', '...#.', '...#.', '...#.', '#..#.', '.##..'],
-  'K': ['#...#', '#..#.', '#.#..', '##...', '#.#..', '#..#.', '#...#'],
-  'L': ['#....', '#....', '#....', '#....', '#....', '#....', '#####'],
-  'M': ['#...#', '##.##', '#.#.#', '#.#.#', '#...#', '#...#', '#...#'],
-  'N': ['#...#', '##..#', '##..#', '#.#.#', '#..##', '#..##', '#...#'],
-  'O': ['.###.', '#...#', '#...#', '#...#', '#...#', '#...#', '.###.'],
-  'P': ['####.', '#...#', '#...#', '####.', '#....', '#....', '#....'],
-  'Q': ['.###.', '#...#', '#...#', '#...#', '#.#.#', '#..#.', '.##.#'],
-  'R': ['####.', '#...#', '#...#', '####.', '#.#..', '#..#.', '#...#'],
-  'S': ['.####', '#....', '#....', '.###.', '....#', '....#', '####.'],
-  'T': ['#####', '..#..', '..#..', '..#..', '..#..', '..#..', '..#..'],
-  'U': ['#...#', '#...#', '#...#', '#...#', '#...#', '#...#', '.###.'],
-  'V': ['#...#', '#...#', '#...#', '#...#', '#...#', '.#.#.', '..#..'],
-  'W': ['#...#', '#...#', '#...#', '#.#.#', '#.#.#', '##.##', '#...#'],
-  'X': ['#...#', '#...#', '.#.#.', '..#..', '.#.#.', '#...#', '#...#'],
-  'Y': ['#...#', '#...#', '.#.#.', '..#..', '..#..', '..#..', '..#..'],
-  'Z': ['#####', '....#', '...#.', '..#..', '.#...', '#....', '#####'],
-  '0': ['.###.', '#..##', '#.#.#', '##..#', '#...#', '#...#', '.###.'],
-  '1': ['..#..', '.##..', '..#..', '..#..', '..#..', '..#..', '.###.'],
-  '2': ['.###.', '#...#', '....#', '...#.', '..#..', '.#...', '#####'],
-  '3': ['####.', '....#', '....#', '.###.', '....#', '....#', '####.'],
-  '4': ['...#.', '..##.', '.#.#.', '#..#.', '#####', '...#.', '...#.'],
-  '5': ['#####', '#....', '####.', '....#', '....#', '#...#', '.###.'],
-  '6': ['.###.', '#....', '#....', '####.', '#...#', '#...#', '.###.'],
-  '7': ['#####', '....#', '...#.', '..#..', '..#..', '.#...', '.#...'],
-  '8': ['.###.', '#...#', '#...#', '.###.', '#...#', '#...#', '.###.'],
-  '9': ['.###.', '#...#', '#...#', '.####', '....#', '....#', '.###.'],
-  ' ': ['.....', '.....', '.....', '.....', '.....', '.....', '.....'],
-  '.': ['.....', '.....', '.....', '.....', '.....', '.##..', '.##..'],
-  ',': ['.....', '.....', '.....', '.....', '.##..', '.##..', '.#...'],
-  ':': ['.....', '.##..', '.##..', '.....', '.##..', '.##..', '.....'],
-  ';': ['.....', '.##..', '.##..', '.....', '.##..', '.##..', '.#...'],
-  '!': ['..#..', '..#..', '..#..', '..#..', '..#..', '.....', '..#..'],
-  '?': ['.###.', '#...#', '....#', '...#.', '..#..', '.....', '..#..'],
-  "'": ['..#..', '..#..', '..#..', '.....', '.....', '.....', '.....'],
-  '"': ['.#.#.', '.#.#.', '.#.#.', '.....', '.....', '.....', '.....'],
-  '(': ['...#.', '..#..', '.#...', '.#...', '.#...', '..#..', '...#.'],
-  ')': ['.#...', '..#..', '...#.', '...#.', '...#.', '..#..', '.#...'],
-  '-': ['.....', '.....', '.....', '#####', '.....', '.....', '.....'],
-  '+': ['.....', '..#..', '..#..', '#####', '..#..', '..#..', '.....'],
-  '%': ['##..#', '##.#.', '...#.', '..#..', '.#...', '#.##.', '#..##'],
-  '£': ['.###.', '#...#', '#....', '.###.', '#....', '#....', '#####'],
-  '$': ['..#..', '.####', '#.#..', '.###.', '..#.#', '####.', '..#..'],
-  '•': ['.....', '.....', '.###.', '.###.', '.###.', '.....', '.....'],
-  '/': ['....#', '...#.', '...#.', '..#..', '.#...', '.#...', '#....'],
-  '→': ['.....', '..#..', '...#.', '#####', '...#.', '..#..', '.....'],
-  '×': ['.....', '#...#', '.#.#.', '..#..', '.#.#.', '#...#', '.....'],
-  '&': ['.##..', '#..#.', '#.#..', '.#...', '#.#.#', '#..#.', '.##.#'],
-  '=': ['.....', '.....', '#####', '.....', '#####', '.....', '.....'],
-  '~': ['.....', '.....', '.##.#', '#.#..', '.....', '.....', '.....'],
+// ---------- 5x7 bitmap font (rows as 5-bit numbers, MSB = left) ----------
+const FONT: Record<string, number[]> = {
+  A: [0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
+  B: [0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110],
+  C: [0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110],
+  D: [0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110],
+  E: [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111],
+  F: [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000],
+  G: [0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01111],
+  H: [0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
+  I: [0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
+  J: [0b00111, 0b00010, 0b00010, 0b00010, 0b00010, 0b10010, 0b01100],
+  K: [0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001],
+  L: [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111],
+  M: [0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001],
+  N: [0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001],
+  O: [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
+  P: [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000],
+  Q: [0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101],
+  R: [0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001],
+  S: [0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110],
+  T: [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
+  U: [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
+  V: [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100],
+  W: [0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b10101, 0b01010],
+  X: [0b10001, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001],
+  Y: [0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100],
+  Z: [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111],
+  "0": [0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110],
+  "1": [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
+  "2": [0b01110, 0b10001, 0b00001, 0b00110, 0b01000, 0b10000, 0b11111],
+  "3": [0b11110, 0b00001, 0b00001, 0b01110, 0b00001, 0b00001, 0b11110],
+  "4": [0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010],
+  "5": [0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110],
+  "6": [0b01110, 0b10000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110],
+  "7": [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000],
+  "8": [0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110],
+  "9": [0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00001, 0b01110],
+  " ": [0, 0, 0, 0, 0, 0, 0],
+  ".": [0, 0, 0, 0, 0, 0b01100, 0b01100],
+  ",": [0, 0, 0, 0, 0b01100, 0b00100, 0b01000],
+  ";": [0, 0b01100, 0, 0, 0b01100, 0b00100, 0b01000],
+  ":": [0, 0b01100, 0, 0, 0b01100, 0, 0],
+  "!": [0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0, 0b00100],
+  "?": [0b01110, 0b10001, 0b00001, 0b00110, 0b00100, 0, 0b00100],
+  "-": [0, 0, 0, 0b01110, 0, 0, 0],
+  "/": [0b00001, 0b00010, 0b00010, 0b00100, 0b01000, 0b01000, 0b10000],
+  "%": [0b11001, 0b11010, 0b00010, 0b00100, 0b01000, 0b01011, 0b10011],
+  "£": [0b00100, 0b01100, 0b10010, 0b11110, 0b10000, 0b10000, 0b11111],
+  "$": [0b00100, 0b01111, 0b10100, 0b01110, 0b00101, 0b11110, 0b00100],
+  "(": [0b00010, 0b00100, 0b01000, 0b01000, 0b01000, 0b00100, 0b00010],
+  ")": [0b01000, 0b00100, 0b00010, 0b00010, 0b00010, 0b00100, 0b01000],
+  "'": [0b00100, 0b00100, 0b01000, 0, 0, 0, 0],
+  '"': [0b01010, 0b01010, 0, 0, 0, 0, 0],
+  "&": [0b01100, 0b10010, 0b10100, 0b01000, 0b10101, 0b10010, 0b01101],
+  "+": [0, 0b00100, 0b00100, 0b11111, 0b00100, 0b00100, 0],
+  "•": [0, 0, 0b01100, 0b01100, 0b01100, 0, 0],
+  "→": [0, 0b00100, 0b00010, 0b11111, 0b00010, 0b00100, 0],
+  "=": [0, 0, 0b11111, 0, 0b11111, 0, 0],
+  "°": [0b01100, 0b10010, 0b10010, 0b01100, 0, 0, 0],
+  "_": [0, 0, 0, 0, 0, 0, 0b11111],
+  "[": [0b01110, 0b01000, 0b01000, 0b01000, 0b01000, 0b01000, 0b01110],
+  "]": [0b01110, 0b00010, 0b00010, 0b00010, 0b00010, 0b00010, 0b01110],
+  "*": [0, 0b00100, 0b10101, 0b01110, 0b10101, 0b00100, 0],
+  "#": [0b01010, 0b01010, 0b11111, 0b01010, 0b11111, 0b01010, 0b01010],
+  "@": [0b01110, 0b10001, 0b10111, 0b10101, 0b10110, 0b10000, 0b01110],
+  "^": [0b00100, 0b01010, 0b10001, 0, 0, 0, 0],
+  "|": [0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
+  "\\": [0b10000, 0b01000, 0b01000, 0b00100, 0b00010, 0b00010, 0b00001],
+  "<": [0b00010, 0b00100, 0b01000, 0b10000, 0b01000, 0b00100, 0b00010],
+  ">": [0b01000, 0b00100, 0b00010, 0b00001, 0b00010, 0b00100, 0b01000],
+  "×": [0, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0],
 };
-let truncations = 0;
-function norm(s: string): string {
-  return s.replace(/’/g, "'").replace(/[–—]/g, '-').replace(/−/g, '-');
-}
-function text(s: string, x: number, y: number, scale: number, c: C, gap: number = scale): void {
-  let cx = x;
-  for (const ch of norm(s)) {
-    const g = GLYPHS[ch] || GLYPHS[' '];
-    for (let r = 0; r < 7; r++) for (let col = 0; col < 5; col++) {
-      if (g[r][col] === '#') rect(cx + col * scale, y + r * scale, scale, scale, c);
+function drawChar(ch: string, x: number, y: number, s: number, c: RGBA): void {
+  const g = FONT[ch.toUpperCase()] ?? FONT["?"];
+  for (let r = 0; r < 7; r++) {
+    const row = g[r];
+    for (let col = 0; col < 5; col++) {
+      if (row & (1 << (4 - col))) fillRect(x + col * s, y + r * s, s, s, c);
     }
-    cx += 5 * scale + gap;
   }
 }
-function textW(s: string, scale: number, gap: number = scale): number {
-  return norm(s).length * (5 * scale + gap) - gap;
+function textW(s: string, sc: number): number {
+  return s.length === 0 ? 0 : s.length * 6 * sc - sc;
 }
-function put(s: string, x: number, y: number, scale: number, c: C, maxW: number, gap: number = scale): void {
-  if (textW(s, scale, gap) > maxW) { truncations++; console.error('TRUNCATED: ' + s); }
-  text(s, x, y, scale, c, gap);
+function drawText(s: string, x: number, y: number, sc: number, c: RGBA): void {
+  let cx = x;
+  for (const ch of s) { drawChar(ch, cx, y, sc, c); cx += 6 * sc; }
+}
+function drawTextC(s: string, cx: number, y: number, sc: number, c: RGBA): void {
+  drawText(s, cx - Math.floor(textW(s, sc) / 2), y, sc, c);
+}
+function wrapText(s: string, maxW: number, sc: number): string[] {
+  const words = s.split(" ");
+  const lines: string[] = [];
+  let cur = "";
+  for (const w of words) {
+    const t = cur === "" ? w : cur + " " + w;
+    if (textW(t, sc) <= maxW || cur === "") cur = t;
+    else { lines.push(cur); cur = w; }
+  }
+  if (cur !== "") lines.push(cur);
+  return lines;
+}
+// draw wrapped text; truncates to maxLines and counts TRUNCATIONS
+function textBox(s: string, x: number, y: number, maxW: number, maxLines: number, sc: number, c: RGBA, lh: number): number {
+  const lines = wrapText(s, maxW, sc);
+  const shown = lines.slice(0, maxLines);
+  if (lines.length > maxLines) {
+    TRUNCATIONS++;
+    let last = shown[shown.length - 1];
+    while (textW(last + "...", sc) > maxW && last.length > 0) last = last.slice(0, -1);
+    shown[shown.length - 1] = last + "...";
+  }
+  shown.forEach((ln, i) => drawText(ln, x, y + i * lh, sc, c));
+  return shown.length;
 }
 
-// ---------------------------------------------------------------- header
-rect(0, 0, 1024, 58, NAVY);
-text('THE WEDNESDAY WIRE', 12, 10, 4, WHITE);
-text('WEDNESDAY 25 NOVEMBER 2026', 12, 40, 2, YELLOW);
-rect(820, 10, 192, 38, RED);
-text('50 STORIES', 826, 16, 3, WHITE);
-
-// ---------------------------------------------------------------- heroes
-const HX = [0, 341, 682]; // hero column x
-const HW = 339;           // hero column width
-
-// --- HERO 1: tariffs (globe + brick wall + container ship)
-rect(HX[0], 60, HW, 152, SKY);
-rect(HX[0], 60, 96, 18, RED);
-text('LEAD • TARIFFS', HX[0] + 6, 64, 1, WHITE);
-// globe
-circle(70, 140, 52, BLUE);
-circle(50, 125, 14, GREEN);
-circle(88, 128, 10, GREEN);
-circle(82, 160, 16, GREEN);
-rect(68, 88, 3, 104, WHITE);
-rect(18, 138, 104, 3, WHITE);
-// brick wall with mortar
-rect(150, 76, 180, 104, BRICK);
-for (let r = 0; r < 8; r++) {
-  const y = 76 + r * 13;
-  rect(150, y + 12, 180, 2, MORTAR);
-  const off = (r % 2 === 0) ? 0 : 15;
-  for (let k = 0; k < 7; k++) rect(150 + off + k * 30, y, 2, 12, MORTAR);
+// ---------- hero scenes (52..212) ----------
+function tagChip(x: number, y: number, label: string, bg: RGBA, fg: RGBA, sc: number): void {
+  const w = textW(label, sc) + 10;
+  fillRect(x, y, w, 7 * sc + 6, bg);
+  drawText(label, x + 5, y + 3, sc, fg);
 }
-rect(150, 76, 180, 3, RED);
-// % tags on the wall
-rect(158, 84, 96, 16, RED); text('CHINA 20%', 162, 87, 1, WHITE);
-rect(158, 104, 108, 16, NAVY); text('VIETNAM 20%', 162, 107, 1, WHITE);
-rect(158, 124, 96, 16, NAVY); text('INDIA 17%', 162, 127, 1, WHITE);
-rect(158, 144, 84, 16, NAVY); text('EU 15%', 162, 147, 1, WHITE);
-// red down arrow
-rect(308, 92, 6, 62, RED);
-tri(300, 154, 322, 154, 311, 172, RED);
-// container ship at the foot of the wall: hull + containers + bridge, on water
-rect(0, 196, HW, 16, [140, 190, 220]);
-rect(152, 164, 40, 16, RED);
-rect(194, 164, 40, 16, YELLOW);
-rect(236, 164, 40, 16, GREEN);
-rect(278, 164, 40, 16, BLUE);
-rect(318, 158, 12, 22, WHITE);
-rect(320, 162, 8, 5, NAVY);
-rect(148, 180, 184, 16, NAVY);
-tri(332, 180, 332, 196, 318, 196, NAVY);
-
-// --- HERO 2: Cairo tanker fire (overturned tanker, NO grey pillar — v3 defect removed)
-rect(HX[1], 60, HW, 152, SAND);
-rect(HX[1], 60, 62, 18, ORANGE);
-text('CAIRO', HX[1] + 6, 64, 1, WHITE);
-// smoke plume
-circle(390, 92, 16, GREY);
-circle(412, 86, 20, GREY);
-circle(436, 94, 14, GREY);
-// casualty tag
-rect(349, 118, 132, 18, RED);
-text('31 DEAD • 21 HURT', 355, 122, 1, WHITE);
-// dark road band with dashed white centre line (new in v4)
-rect(HX[1], 186, HW, 26, DGREY);
-for (let x = 350; x < 672; x += 30) rect(x, 198, 14, 3, WHITE);
-// burnt-out cars in a row, flames on top
-for (const cx of [360, 430, 500]) {
-  rect(cx, 170, 56, 16, BLACK);
-  flame(cx + 12, 170, 7, ORANGE, YELLOW);
-  flame(cx + 38, 170, 6, ORANGE, YELLOW);
+function smokeCloud(x: number, y: number, s: number, c: RGBA): void {
+  fillCircle(x, y, 16 * s, c); fillCircle(x + 18 * s, y - 6 * s, 20 * s, c);
+  fillCircle(x + 38 * s, y, 16 * s, c); fillCircle(x + 18 * s, y + 6 * s, 18 * s, c);
 }
-// overturned tanker: grey body, 4 wheels UP, hazard diamond, red stripe, flames
-rect(566, 148, 104, 34, [160, 164, 168]);
-rect(566, 174, 104, 4, RED);
-for (const wx of [580, 606, 632, 658]) {
-  circle(wx, 140, 9, BLACK);
-  circle(wx, 140, 4, GREY);
+function hero1(): void {
+  // tariffs: globe + brick wall with % tags + container ship + red down arrow
+  fillRect(0, 52, 341, 160, BLUELT);
+  // globe
+  fillCircle(88, 132, 62, BLUE);
+  fillEllipse(88, 132, 28, 62, [70, 140, 200, 255]);
+  fillEllipse(88, 132, 62, 24, [70, 140, 200, 255]);
+  fillCircle(70, 108, 14, [76, 175, 80, 255]);
+  fillCircle(108, 150, 16, [76, 175, 80, 255]);
+  fillCircle(98, 100, 8, [76, 175, 80, 255]);
+  // brick wall
+  const wx = 168, wy = 66, ww = 140, wh = 118;
+  fillRect(wx, wy, ww, wh, [165, 90, 50, 255]);
+  for (let r = 0; r < 7; r++) {
+    const by = wy + r * 17;
+    hline(wx, wx + ww - 1, by, [120, 60, 30, 255]);
+    for (let b = 0; b < 4; b++) {
+      const bx = Math.max(wx, wx + ((r % 2) * 18) + b * 36 - 18);
+      vline(bx, by, by + 16, [120, 60, 30, 255]);
+    }
+  }
+  // % tags on the wall
+  tagChip(wx + 8, wy + 8, "CHINA 20%", NAVY, WHITE, 1);
+  tagChip(wx + 8, wy + 30, "VIETNAM 20%", NAVY, WHITE, 1);
+  tagChip(wx + 8, wy + 52, "INDIA 17%", NAVY, WHITE, 1);
+  tagChip(wx + 8, wy + 74, "EU 15%", NAVY, WHITE, 1);
+  // red down arrow top-right
+  polyFill([[312, 58], [326, 58], [326, 82], [333, 82], [319, 102], [305, 82], [312, 82]], RED);
+  // container ship along the bottom
+  fillRect(150, 192, 185, 16, NAVY2);
+  const cols: RGBA[] = [[216, 35, 42, 255], [255, 210, 62, 255], [46, 125, 50, 255], [43, 108, 176, 255]];
+  for (let i = 0; i < 5; i++) fillRect(156 + i * 34, 178, 30, 14, cols[i % 4]);
+  for (let i = 0; i < 3; i++) fillRect(170 + i * 34, 166, 30, 12, cols[(i + 2) % 4]);
+  fillRect(318, 160, 14, 32, WHITE);
+  fillRect(0, 208, 341, 4, [90, 140, 190, 255]);
 }
-flame(606, 132, 6, ORANGE, YELLOW);
-flame(632, 132, 6, ORANGE, YELLOW);
-// hazard diamond, half white / half red
-tri(640, 153, 628, 165, 640, 177, WHITE);
-tri(640, 153, 652, 165, 640, 177, RED);
-
-// --- HERO 3: Shenzhou-24, first Pakistani in orbit
-rect(HX[2], 60, HW, 152, NAVY2);
-rect(HX[2], 60, 56, 18, BLUE);
-text('SPACE', HX[2] + 6, 64, 1, WHITE);
-// stars
-for (const [sx, sy] of [[700, 90], [760, 80], [830, 100], [960, 85], [1000, 120], [720, 180], [990, 190], [860, 70]]) rect(sx, sy, 2, 2, WHITE);
-// China flag: red, big yellow star + 4 small
-rect(696, 76, 72, 44, RED);
-star(716, 92, 10, YELLOW);
-star(742, 84, 3, YELLOW); star(750, 92, 3, YELLOW); star(742, 100, 3, YELLOW); star(734, 104, 3, YELLOW);
-// Pakistan flag: green, white stripe, white crescent + star
-rect(776, 76, 72, 44, [20, 90, 50]);
-rect(776, 76, 16, 44, WHITE);
-circle(818, 98, 14, WHITE);
-circle(824, 96, 12, [20, 90, 50]);
-star(838, 88, 4, WHITE);
-// rocket: white body, red nose + fins, blue window, flame contained in scene
-rect(880, 96, 34, 64, WHITE);
-tri(880, 96, 914, 96, 897, 72, RED);
-circle(897, 120, 7, BLUE);
-tri(880, 140, 880, 160, 864, 160, RED);
-tri(914, 140, 914, 160, 930, 160, RED);
-rect(880, 152, 34, 8, RED);
-tri(888, 160, 906, 160, 897, 184, ORANGE);
-tri(891, 160, 903, 160, 897, 176, YELLOW);
-// Tiangong ring station
-ring(968, 128, 26, 5, GOLD, NAVY2);
-rect(952, 120, 32, 16, WHITE);
-rect(928, 124, 24, 8, GOLD);
-rect(984, 124, 24, 8, GOLD);
-// three astronaut silhouettes
-for (const ax of [712, 748, 784]) {
-  circle(ax, 178, 8, WHITE);
-  rect(ax - 8, 186, 16, 20, WHITE);
+function hero2(): void {
+  // Cairo: smoke, red toll banner, burnt cars, overturned tanker, road
+  fillRect(341, 52, 341, 160, CREAM);
+  smokeCloud(400, 92, 1, [150, 150, 150, 255]);
+  fillRect(352, 122, 222, 20, RED);
+  drawText("31 DEAD • 21 HURT", 358, 126, 2, WHITE);
+  // road
+  fillRect(341, 186, 341, 26, [60, 60, 60, 255]);
+  for (let x = 348; x < 675; x += 24) fillRect(x, 197, 14, 3, WHITE);
+  // burnt-out cars with flames
+  for (const cx of [360, 425, 490]) {
+    fillRect(cx, 168, 52, 18, [25, 25, 25, 255]);
+    flame(cx + 12, 168, 14, 16);
+    flame(cx + 36, 168, 12, 12);
+  }
+  // overturned tanker: body + wheels UP + hazard diamond
+  fillRect(566, 152, 108, 34, [150, 150, 150, 255]);
+  fillRect(566, 152, 108, 8, [110, 110, 110, 255]);
+  fillRect(566, 178, 108, 8, RED);
+  for (const wx of [578, 606, 634, 662]) {
+    fillCircle(wx, 144, 10, [25, 25, 25, 255]);
+    fillCircle(wx, 144, 4, [180, 180, 180, 255]);
+  }
+  // hazard diamond (red top, white bottom)
+  polyFill([[620, 156], [636, 170], [620, 184], [604, 170]], RED);
+  polyFill([[620, 170], [636, 170], [620, 184], [604, 170]], WHITE);
+  fillRect(618, 160, 4, 18, INK);
 }
-text('TIANGONG', 936, 196, 1, YELLOW);
+function hero3(): void {
+  // Shenzhou-24: flags, rocket, Tiangong ring, astronauts
+  fillRect(682, 52, 342, 160, NAVY);
+  for (let i = 0; i < 40; i++) {
+    const sx = 690 + ((i * 53) % 320), sy = 58 + ((i * 37) % 140);
+    fillRect(sx, sy, 2, 2, [255, 255, 255, 200]);
+  }
+  // China flag
+  fillRect(694, 66, 66, 36, RED);
+  star(708, 80, 8, YELLOW);
+  star(730, 72, 3, YELLOW); star(738, 80, 3, YELLOW);
+  star(730, 90, 3, YELLOW); star(722, 94, 3, YELLOW);
+  // Pakistan flag
+  fillRect(770, 66, 66, 36, [20, 90, 50, 255]);
+  fillRect(770, 66, 16, 36, WHITE);
+  fillCircle(812, 84, 11, WHITE);
+  fillCircle(816, 84, 10, [20, 90, 50, 255]);
+  star(826, 80, 4, WHITE);
+  // rocket rising
+  polyFill([[884, 66], [898, 66], [898, 118], [884, 118]], WHITE);
+  polyFill([[884, 66], [898, 66], [891, 52]], RED);
+  polyFill([[884, 108], [872, 128], [884, 118]], RED);
+  polyFill([[898, 108], [910, 128], [898, 118]], RED);
+  fillCircle(891, 88, 6, BLUE);
+  flame(891, 146, 20, 26);
+  // Tiangong ring + module
+  ring(968, 118, 26, 5, [255, 190, 40, 255]);
+  fillRect(940, 112, 56, 12, WHITE);
+  fillRect(962, 104, 12, 28, WHITE);
+  // three astronaut silhouettes
+  for (const ax of [700, 736, 772]) {
+    fillCircle(ax + 10, 178, 9, WHITE);
+    fillRect(ax + 2, 188, 16, 16, WHITE);
+    fillRect(ax + 2, 204, 6, 8, WHITE);
+    fillRect(ax + 12, 204, 6, 8, WHITE);
+  }
+  drawText("TIANGONG", 948, 196, 1, YELLOW);
+}
 
-// --- hero headlines (scale 3, max 17 chars/line)
-put('TRUMP PROPOSES', 12, 216, 3, INK, 317);
-put('NEW TARIFFS ON', 12, 242, 3, INK, 317);
-put('14 ECONOMIES', 12, 268, 3, INK, 317);
-put('CAIRO TANKER FIRE', 353, 216, 3, INK, 317);
-put('KILLS 31', 353, 242, 3, INK, 317);
-put('CHINA SENDS FIRST', 694, 216, 3, INK, 317);
-put('PAKISTANI TO', 694, 242, 3, INK, 317);
-put('ORBIT', 694, 268, 3, INK, 317);
+// ---------- mid scenes (376..448) ----------
+// columns: x0 = 0, 171, 342, 513, 684, 855 ; width 170
+function mid1(): void {
+  // Macy's balloon held down by ropes, wind streaks
+  fillRect(0, 376, 170, 72, SKY);
+  fillCircle(82, 408, 26, RED);
+  fillCircle(74, 400, 6, [255, 120, 120, 255]);
+  fillRect(72, 402, 4, 4, INK); fillRect(88, 402, 4, 4, INK);
+  // smile
+  for (let a = 0; a <= 8; a++) {
+    const ang = Math.PI * (0.25 + (a / 8) * 0.5);
+    px(Math.round(80 + 10 * Math.cos(ang)), Math.round(410 + 8 * Math.sin(ang)), INK);
+  }
+  thickLine(66, 430, 56, 448, 2, INK);
+  thickLine(98, 430, 108, 448, 2, INK);
+  thickLine(82, 434, 82, 448, 2, INK);
+  // wind streaks
+  thickLine(8, 392, 40, 392, 2, [150, 190, 220, 255]);
+  thickLine(14, 428, 46, 428, 2, [150, 190, 220, 255]);
+  thickLine(128, 384, 162, 384, 2, [150, 190, 220, 255]);
+}
+function mid2(): void {
+  // Kospi (STRENGTHENED): silicon wafer + bigger chip + thick red down arrow
+  fillRect(171, 376, 170, 72, PAPER);
+  // wafer behind chip
+  fillCircle(248, 412, 30, [210, 210, 210, 255]);
+  ring(248, 412, 30, 1, [160, 160, 160, 255]);
+  vline(248, 384, 440, [170, 170, 170, 255]);
+  hline(220, 276, 412, [170, 170, 170, 255]);
+  // bigger chip, centred left
+  fillRect(212, 392, 76, 42, NAVY2);
+  for (let i = 0; i < 4; i++) {
+    fillRect(206, 398 + i * 9, 6, 4, [120, 120, 120, 255]);
+    fillRect(288, 398 + i * 9, 6, 4, [120, 120, 120, 255]);
+  }
+  for (let i = 0; i < 4; i++) {
+    fillRect(224 + i * 14, 386, 4, 6, [120, 120, 120, 255]);
+    fillRect(224 + i * 14, 434, 4, 6, [120, 120, 120, 255]);
+  }
+  fillRect(232, 404, 36, 18, [140, 190, 230, 255]);
+  fillRect(240, 408, 20, 10, [90, 150, 210, 255]);
+  // thick red down arrow, dominating the right side
+  polyFill([[312, 380], [328, 380], [328, 414], [338, 414], [320, 444], [302, 414], [312, 414]], RED);
+}
+function mid3(): void {
+  // Dow V-chart: red plunge then green recovery
+  fillRect(342, 376, 170, 72, GREENLT);
+  thickLine(352, 388, 420, 436, 4, RED);
+  thickLine(420, 436, 500, 388, 4, GREEN);
+  polyFill([[500, 388], [488, 390], [500, 402]], GREEN);
+  hline(350, 504, 392, [120, 200, 120, 255]);
+  drawText("RECORD", 452, 394, 1, GREEN);
+}
+function mid4(): void {
+  // UK energy: house + bill with flame
+  fillRect(513, 376, 170, 72, CREAM);
+  // house
+  polyFill([[528, 412], [566, 386], [604, 412]], [150, 80, 40, 255]);
+  fillRect(534, 412, 64, 32, [240, 220, 180, 255]);
+  fillRect(558, 424, 16, 20, [120, 70, 30, 255]);
+  fillRect(540, 418, 10, 10, BLUELT);
+  // bill / meter
+  fillRect(616, 390, 56, 44, WHITE);
+  fillRect(616, 390, 56, 3, RED);
+  fillRect(616, 390, 3, 44, RED); fillRect(669, 390, 3, 44, RED); fillRect(616, 431, 56, 3, RED);
+  drawText("!", 640, 398, 2, RED);
+  flame(656, 428, 12, 12);
+}
+function mid5(): void {
+  // Houthis / Ras Tanura (FIXED flare): thick stack, big flame, tank, crossed drone
+  fillRect(684, 376, 170, 72, MIDGREY);
+  // black smoke plume
+  fillCircle(706, 392, 12, [30, 30, 30, 255]);
+  fillCircle(720, 386, 14, [30, 30, 30, 255]);
+  fillCircle(732, 394, 10, [30, 30, 30, 255]);
+  // refinery tower
+  fillRect(694, 410, 26, 34, [140, 140, 140, 255]);
+  fillRect(694, 410, 26, 4, [100, 100, 100, 255]);
+  fillRect(726, 420, 18, 24, [160, 160, 160, 255]);
+  // round storage tank with dome
+  fillRect(748, 420, 34, 24, [190, 190, 190, 255]);
+  fillEllipse(765, 420, 17, 8, [190, 190, 190, 255]);
+  fillRect(748, 428, 34, 3, [120, 120, 120, 255]);
+  // THICK flare stack + BIG flame
+  fillRect(790, 392, 18, 52, [70, 70, 70, 255]);
+  fillRect(788, 388, 22, 5, [50, 50, 50, 255]);
+  flame(799, 390, 30, 30);
+  // crossed-out drone (intercepted)
+  fillRect(824, 392, 22, 6, [25, 25, 25, 255]);
+  fillCircle(826, 390, 4, [25, 25, 25, 255]); fillCircle(844, 390, 4, [25, 25, 25, 255]);
+  fillCircle(826, 400, 4, [25, 25, 25, 255]); fillCircle(844, 400, 4, [25, 25, 25, 255]);
+  thickLine(820, 384, 850, 408, 4, RED);
+  thickLine(850, 384, 820, 408, 4, RED);
+  // small oil barrel
+  fillRect(836, 428, 14, 16, [30, 60, 120, 255]);
+  fillRect(836, 433, 14, 2, [20, 40, 90, 255]);
+}
+function mid6(): void {
+  // Netanyahu: courthouse + gavel
+  fillRect(855, 376, 169, 72, SKY);
+  polyFill([[868, 402], [916, 380], [964, 402]], NAVY);
+  fillRect(874, 402, 8, 34, WHITE);
+  fillRect(898, 402, 8, 34, WHITE);
+  fillRect(922, 402, 8, 34, WHITE);
+  fillRect(946, 402, 8, 34, WHITE);
+  fillRect(868, 436, 96, 8, WHITE);
+  // gavel, diagonal
+  thickLine(978, 392, 1012, 420, 6, [120, 70, 30, 255]);
+  thickLine(972, 402, 990, 386, 8, [150, 90, 40, 255]);
+}
 
-// --- why-it-matters boxes
-for (let i = 0; i < 3; i++) rect(HX[i], 298, HW, 48, PALEY);
-text('WHY IT MATTERS', HX[0] + 8, 302, 1, RED);
-text('US HOUSEHOLDS PAY $900', HX[0] + 8, 314, 2, INK, 1);
-text('A YEAR UNDER NEW DUTIES', HX[0] + 8, 328, 2, INK, 1);
-text('WHY IT MATTERS', HX[1] + 8, 302, 1, RED);
-text('27 VEHICLES BURNED', HX[1] + 8, 314, 2, INK, 1);
-text('RING ROAD SHUT AFTER BLAST', HX[1] + 8, 328, 2, INK, 1);
-text('WHY IT MATTERS', HX[2] + 8, 302, 1, RED);
-text('FIRST FOREIGNER ABOARD', HX[2] + 8, 314, 2, INK, 1);
-text('TIANGONG STATION', HX[2] + 8, 328, 2, INK, 1);
-
-// --- hero detail lines (scale 1, slate)
-put('CHINA 20% (40% IF TRUCE FAILS) • VIETNAM 20%/35%', 12, 350, 1, SLATE, 317);
-put('INDIA 17%/25% • EU 15%', 12, 359, 1, SLATE, 317);
-put('CAUSE: CAR HIT TANKER, IT OVERTURNED', 353, 350, 1, SLATE, 317);
-put('AND CAUGHT FIRE', 353, 359, 1, SLATE, 317);
-put('CREW: TANG HONGBO • WU YI • ZEESHAN ALI', 694, 350, 1, SLATE, 317);
-put('DOCKED 03:56 UTC', 694, 359, 1, SLATE, 317);
-rect(0, 368, 1024, 2, RULE);
-
-// ---------------------------------------------------------------- mids (6 columns x 0,170,341,512,683,854)
-const MX = [0, 170, 341, 512, 683, 854];
-
-// --- M1: Macy's balloon — cleaner face, ropes to hands, wind lines
-rect(MX[0], 372, 170, 76, SKY);
-rect(8, 392, 18, 2, SLATE);
-rect(12, 404, 14, 2, SLATE);
-ellipse(85, 408, 26, 30, RED);
-circle(76, 402, 3, INK);
-circle(94, 402, 3, INK);
-line(78, 412, 82, 418, INK, 2);
-line(82, 418, 88, 418, INK, 2);
-line(88, 418, 92, 412, INK, 2);
-line(72, 436, 66, 448, INK, 1);
-line(98, 436, 104, 448, INK, 1);
-rect(58, 444, 14, 4, [222, 170, 120]);
-rect(98, 444, 14, 4, [222, 170, 120]);
-
-// --- M2: Kospi — chip + steep red fall
-rect(196, 398, 34, 26, NAVY);
-rect(206, 406, 14, 10, [120, 170, 210]);
-for (const py of [402, 408, 414]) { rect(192, py, 4, 3, NAVY); rect(230, py, 4, 3, NAVY); }
-line(238, 380, 322, 438, RED, 4);
-tri(322, 438, 308, 432, 318, 424, RED);
-
-// --- M3: Dow — V-shaped recovery
-rect(MX[2], 372, 170, 76, LGREEN);
-line(352, 386, 400, 430, RED, 3);
-line(400, 430, 470, 392, GREEN, 3);
-line(470, 392, 500, 388, GREEN, 3);
-
-// --- M4: UK energy — house + bill/meter with red ! + teardrop flame
-rect(540, 404, 44, 34, [181, 140, 90]);
-tri(536, 404, 588, 404, 562, 384, [120, 70, 40]);
-rect(558, 420, 10, 18, [80, 50, 30]);
-rect(572, 412, 10, 10, [180, 220, 240]);
-rect(604, 386, 48, 52, NAVY);
-rect(606, 388, 44, 48, WHITE);
-rect(606, 388, 44, 10, RED);
-circle(628, 418, 9, RED);
-rect(627, 411, 2, 9, WHITE);
-rect(627, 422, 2, 2, WHITE);
-flame(658, 436, 5, ORANGE, YELLOW);
-
-// --- M5: Houthis refinery — flat-top storage tanks + thick flare stack + smoke + big drone with thin red X
-rect(MX[4], 372, 170, 76, LGREY);
-// flat-top tanks (rounded tops read as tombstones at this size)
-rect(694, 406, 34, 32, [140, 145, 150]);
-rect(694, 406, 34, 4, [110, 115, 120]);
-rect(698, 414, 4, 20, [175, 180, 185]);
-rect(732, 418, 28, 20, [160, 165, 170]);
-rect(732, 418, 28, 4, [130, 135, 140]);
-// black smoke column rising from the tall tank
-circle(706, 392, 9, [40, 40, 40]);
-circle(714, 382, 11, [40, 40, 40]);
-circle(722, 392, 8, [40, 40, 40]);
-// thick flare stack with a bigger flame
-rect(766, 394, 8, 44, [90, 90, 90]);
-flame(770, 394, 6, ORANGE, YELLOW);
-// drone, big enough to read through the thin red X
-rect(806, 384, 20, 8, [30, 30, 30]);
-circle(808, 380, 3, [30, 30, 30]);
-circle(824, 380, 3, [30, 30, 30]);
-line(806, 382, 826, 382, [30, 30, 30], 1);
-line(802, 380, 830, 400, RED, 2);
-line(830, 380, 802, 400, RED, 2);
-// oil barrel with bands
-rect(828, 420, 18, 18, [30, 60, 110]);
-rect(828, 425, 18, 3, [60, 100, 160]);
-rect(828, 432, 18, 3, [60, 100, 160]);
-
-// --- M6: Netanyahu — courthouse + gavel
-rect(MX[5], 372, 170, 76, SKY);
-rect(880, 392, 84, 28, NAVY);
-rect(886, 396, 8, 24, WHITE);
-rect(912, 396, 8, 24, WHITE);
-rect(938, 396, 8, 24, WHITE);
-tri(876, 392, 968, 392, 922, 376, NAVY);
-rect(880, 420, 84, 18, WHITE);
-rect(880, 438, 84, 4, GREY);
-line(968, 392, 984, 404, [120, 80, 40], 8);
-line(984, 404, 1004, 424, [120, 80, 40], 3);
-
-// --- mid headlines (scale 2, gap 1, max 15 chars/line)
-const MID_HEAD: string[][] = [
-  ["MACY'S 100TH", 'PARADE', 'POSTPONED'],
-  ['KOSPI CRASHES', '6.2% AI FEARS', 'RETURN'],
-  ['DOW ERASES', '1,100-PT DROP', 'RECORD CLOSE'],
-  ['UK ENERGY CAP', 'JUMPS 26% TO', '£2,166 A YEAR'],
-  ['HOUTHIS CLAIM', 'REFINERY HIT', '- RAS TANURA'],
-  ['JUDGES: DROP', 'NETANYAHU', 'BRIBERY CASE'],
+// ---------- mid text ----------
+interface Mid { head: string; big: string; bigC: RGBA; sub: string; }
+const MIDS: Mid[] = [
+  { head: "MACY'S 100TH PARADE POSTPONED", big: "60 MPH", bigC: RED, sub: "GUSTS • SAT 28 NOV" },
+  { head: "KOSPI CRASHES 6.2% AI FEARS RETURN", big: "-6.2%", bigC: RED, sub: "SAMSUNG -9.9% HYNIX -11.1%" },
+  { head: "DOW ERASES 1,100-PT DROP RECORD CLOSE", big: "50,183", bigC: GREEN, sub: "-1,100 → +164 • +0.33%" },
+  { head: "UK ENERGY CAP JUMPS 26% TO £2,166 A YEAR", big: "+26%", bigC: RED, sub: "£1,723 → £2,166 • +£443" },
+  { head: "HOUTHIS CLAIM REFINERY HIT - RAS TANURA", big: "550K BPD", bigC: INK, sub: "BRENT $93.60 +2.41%" },
+  { head: "JUDGES: DROP NETANYAHU BRIBERY CASE", big: "CASE 4000", bigC: INK, sub: "RECOMMEND, NOT A RULING" },
 ];
-for (let i = 0; i < 6; i++) {
-  for (let l = 0; l < MID_HEAD[i].length; l++) put(MID_HEAD[i][l], MX[i] + 5, 452 + l * 16, 2, INK, 160, 1);
-}
-// --- mid big numbers (scale 3, gap 2)
-const MID_BIG: [string, C][] = [
-  ['60 MPH', RED], ['-6.2%', RED], ['50,183', GREEN], ['+26%', RED], ['550K BPD', INK], ['CASE 4000', INK],
-];
-for (let i = 0; i < 6; i++) put(MID_BIG[i][0], MX[i] + 5, 504, 3, MID_BIG[i][1], 160, 2);
-// --- mid sub-lines (scale 1, slate)
-const MID_SUB: string[][] = [
-  ['GUSTS • SAT 28 NOV'],
-  ['SAMSUNG -9.9%', 'SK HYNIX -11.1%'],
-  ['-1,100 → +164 • +0.33%'],
-  ['£1,723 → £2,166 • +£443'],
-  ['BRENT $93.60 +2.41%'],
-  ['RECOMMEND, NOT A RULING'],
-];
-for (let i = 0; i < 6; i++) {
-  for (let l = 0; l < MID_SUB[i].length; l++) put(MID_SUB[i][l], MX[i] + 5, 530 + l * 9, 1, SLATE, 160);
-}
-rect(0, 550, 1024, 2, RULE);
-
-// ---------------------------------------------------------------- briefs (5 columns, 41 stories)
-const BX = [12, 214, 416, 618, 820];
-const BHEAD: [string, C][] = [
-  ['MIDDLE EAST', RED], ['ASIA-PACIFIC', TEAL], ['EUROPE', PURPLE], ['AMERICAS', AGREEN], ['GLOBAL & SPORT', BROWN],
-];
-for (let i = 0; i < 5; i++) {
-  text(BHEAD[i][0], BX[i], 556, 2, BHEAD[i][1]);
-  rect(BX[i], 578, 190, 3, BHEAD[i][1]);
-}
-type Brief = [string, string];
-const BRIEFS: Brief[][] = [
-  [ // Middle East — 8
-    ['BOGOR GOLD MINE FLOODS', '9 DEAD, 17 TRAPPED, 100M SHAFT'],
-    ['SUDAN DRONE STRIKES', '19 KILLED IN BLUE NILE'],
-    ['GAZA STRIKE KILLS HAMAS', 'OFFICIAL, WIFE, 2 DAUGHTERS'],
-    ['US: CITIZENS LEAVE IRAN', 'TENSIONS RISE'],
-    ['UKRAINE HITS RUSSIAN SHIP', 'CORVETTE OFF BENGHAZI'],
-    ['IRAQ ORDERS TROOPS TO BORDERS', 'OIL OVERSIGHT'],
-    ['COALITION HITS HODEIDAH', 'MISSILE PLATFORM DESTROYED'],
-    ['IRAN WEAPONS CLAIM', 'CHEMICAL ARMS ALLEGED'],
-  ],
-  [ // Asia-Pacific — 9
-    ['SOLOMON ISLANDS TREATY', 'AUSTRALIA TOP SECURITY PARTNER'],
-    ['BANGLADESH WAGE +36%', '17,000 TAKAS MINIMUM'],
-    ['CHINA PROBES SHANGHAI CHIEF', '4TH TOP LEADER SINCE 2025'],
-    ['N. KOREA EXPELS SWISS ENVOY', 'OFFICE TO CLOSE IN 48H'],
-    ['HONG KONG: 1 YEAR ON', '168 NAMES READ (ANNIVERSARY)'],
-    ['JAPAN: DATA-CENTRE REVOLT', 'AI POWER BOOM SPARKS ROW'],
-    ['TAIWAN VOTES SATURDAY', 'AI FAKES FEARED'],
-    ['INDIA-MALAYSIA DRILL OPENS', 'HARIMAU SHAKTI IN IPOH'],
-    ['INDIA CONDEMNS RIYADH HIT', '11 WOUNDED, 2 INDIANS'],
-  ],
-  [ // Europe — 8
-    ['SPAIN VOTES SUNDAY', 'FAR RIGHT MAY ENTER GOVT'],
-    ['MI5 WARNS OF RUSSIAN SABOTAGE', 'UK FIRMS ON ALERT'],
-    ['POLAND NO-FLY ZONE', 'NEAR UKRAINE BORDER'],
-    ['UK AI WARNING', 'WATCHDOG VS META MUSE AI'],
-    ['SARKOZY TO STAND TRIAL 2027', 'WITNESS-TAMPERING CASE'],
-    ['LONDON MUSEUM REOPENS', 'VICTORIAN HALL SATURDAY'],
-    ['UKRAINE NEEDS EUR 115BN', 'EUR 25BN GAP FOR 2027'],
-    ['RUSSIAN WAR DEAD 490,334+', 'LEAKED DATA, UP TO 700K'],
-  ],
-  [ // Americas — 9
-    ['MISSISSIPPI PLANE CRASH', '6 DEAD, FAMILY OF 6'],
-    ['IOWA BLAST: 4,400 KG', '20-MILE SHELTER, NO LEAD FOUND'],
-    ['VENEZUELA DEBT: $237.5BN', '242% OF GDP (DISCLOSED TUE)'],
-    ['CIA NETWORK HACKED', 'OSINT HIT, CHINA SUSPECTED'],
-    ['DOJ CHARGES 800+ IN SCAMS', '400 CASES WORLDWIDE'],
-    ['NSA NETWORK DOWN FOR DAYS', 'BAD UPDATE, NOT A HACK'],
-    ['TRUMP: FUNDING IRAN WAR PREP', 'THROUGH JANUARY'],
-    ['MEASLES: 9 US DEATHS IN 2026', 'CDC REPORT'],
-    ['CANADA TIGHTENS STUDENT RULES', 'FOREIGN-STUDENT CAPS'],
-  ],
-  [ // Global & Sport — 7
-    ['CHEMICAL WEAPONS', '30+ NATIONS: RUSSIA, STOP'],
-    ['LANDMINE DEATHS 5-YEAR HIGH', 'GLOBAL TOLL RISES'],
-    ['WHO: END CUBA FUEL BLOCKADE', 'CHIEF URGES US'],
-    ['MALAYSIA RETURNS REFUGEES', 'THOUSANDS TO MYANMAR'],
-    ['AIRPORTS COURT PRIVATE CASH', 'EXPANSION FUNDING'],
-    ['NBA: NETS 104, BUCKS 97', 'RANDLE 28 PTS, CUP WIN'],
-    ["MLB SUES PLAYERS' UNION", '38-PAGE LOCKOUT COMPLAINT'],
-  ],
-];
-for (let col = 0; col < 5; col++) {
-  for (let r = 0; r < BRIEFS[col].length; r++) {
-    const y = 586 + r * 30;
-    put(BRIEFS[col][r][0], BX[col], y, 1, INK, 190);
-    put(BRIEFS[col][r][1], BX[col], y + 9, 1, SLATE, 190);
+function midText(): void {
+  for (let i = 0; i < 6; i++) {
+    const x0 = i * 171 + 8;
+    const m = MIDS[i];
+    textBox(m.head, x0, 452, 156, 3, 2, INK, 17);
+    drawText(m.big, x0, 508, 3, m.bigC);
+    drawText(m.sub, x0, 536, 1, GREY);
   }
 }
-// date-check note sits DIRECTLY under the last GLOBAL & SPORT brief (v3 gap fixed)
-put('EVERY STORY DATE-CHECKED', 820, 796, 1, SLATE, 190);
-put('FOR WED 25 NOV 2026', 820, 805, 1, SLATE, 190);
 
-// ---------------------------------------------------------------- footer
-rect(0, 852, 1024, 172, NAVY);
-text('CLAIMED VS CONFIRMED', 12, 864, 2, YELLOW);
-put('CAIRO 31/21 CONFIRMED NEXT MORNING • BOGOR 9/17 IS THE 25 NOV FIGURE', 12, 890, 1, WHITE, 660);
-put('HONG KONG FIRE IS 2025 ANNIVERSARY, NOT A NEW FIRE • VENEZUELA DEBT DISCLOSED TUE 24, REPORTED WED 25', 12, 902, 1, WHITE, 660);
-// date check box (right)
-rect(700, 862, 312, 48, YELLOW);
-rect(703, 865, 306, 42, NAVY);
-text('DATE CHECK:', 790, 870, 2, YELLOW);
-text('WED 25 NOV 2026', 766, 888, 2, YELLOW);
-// markets strip + sources + bottom line
-rect(12, 926, 1000, 2, [120, 110, 80]);
-put('DOW 50,182.95 +0.33% • S&P 7,182.78 -0.25% • NASDAQ 23,585.80 -0.62% • KOSPI -6.16% • BRENT $93.60 • GOLD $3,598.10 • BITCOIN $60,200.94 • 10-YR 4.85%', 12, 938, 1, YELLOW, 1000);
-put('SOURCES: REUTERS • AP • BBC • NYT • ESPN • OFGEM • PIB • AL JAZEERA • MARKETS CLOSED THU 26 NOV (THANKSGIVING); FRI HALF-DAY', 12, 962, 1, LTEXT, 1000);
-put('50 STORIES • TARIFF LEAD • WHY IT MATTERS • EVERY STORY DATE-CHECKED FOR WED 25 NOV 2026', 12, 992, 1, LTEXT, 1000);
+// ---------- briefs ----------
+interface Brief { t: string; d: string; }
+const COLS: Array<{ name: string; c: RGBA; x: number; w: number; items: Brief[] }> = [
+  { name: "MIDDLE EAST", c: RED, x: 8, w: 192, items: [
+    { t: "BOGOR GOLD MINE FLOODS", d: "9 DEAD, 17 TRAPPED, 100M SHAFT" },
+    { t: "SUDAN DRONE STRIKES", d: "19 KILLED IN BLUE NILE" },
+    { t: "GAZA STRIKE KILLS HAMAS", d: "OFFICIAL, WIFE, 2 DAUGHTERS" },
+    { t: "US: CITIZENS LEAVE IRAN", d: "TENSIONS RISE" },
+    { t: "UKRAINE HITS RUSSIAN SHIP", d: "CORVETTE OFF BENGHAZI" },
+    { t: "IRAQ ORDERS TROOPS TO BORDERS", d: "OIL OVERSIGHT" },
+    { t: "COALITION HITS HODEIDAH", d: "MISSILE PLATFORM DESTROYED" },
+    { t: "IRAN WEAPONS CLAIM", d: "CHEMICAL ARMS ALLEGED" },
+    { t: "CHEMICAL WEAPONS", d: "30+ NATIONS: RUSSIA, STOP" },
+    { t: "INDIA CONDEMNS RIYADH HIT", d: "11 WOUNDED, 2 INDIANS" },
+  ]},
+  { name: "ASIA-PACIFIC", c: TEAL, x: 213, w: 192, items: [
+    { t: "SOLOMON ISLANDS TREATY", d: "AUSTRALIA TOP SECURITY PARTNER" },
+    { t: "BANGLADESH WAGE +36%", d: "17,000 TAKAS MINIMUM" },
+    { t: "CHINA PROBES SHANGHAI CHIEF", d: "4TH TOP LEADER SINCE 2025" },
+    { t: "N. KOREA EXPELS SWISS ENVOY", d: "OFFICE TO CLOSE IN 48H" },
+    { t: "HONG KONG: 1 YEAR ON", d: "168 NAMES READ (ANNIVERSARY)" },
+    { t: "JAPAN: DATA-CENTRE REVOLT", d: "AI POWER BOOM SPARKS ROW" },
+    { t: "TAIWAN VOTES SATURDAY", d: "AI FAKES FEARED" },
+    { t: "INDIA-MALAYSIA DRILL OPENS", d: "HARIMAU SHAKTI IN IPOH" },
+    { t: "CANADA TIGHTENS STUDENT RULES", d: "FOREIGN-STUDENT CAPS" },
+  ]},
+  { name: "EUROPE", c: PURPLE, x: 418, w: 162, items: [
+    { t: "SPAIN VOTES SUNDAY", d: "FAR RIGHT MAY ENTER GOVT" },
+    { t: "MI5 WARNS RUSSIAN SABOTAGE", d: "UK FIRMS ON ALERT" },
+    { t: "POLAND NO-FLY ZONE", d: "NEAR UKRAINE BORDER" },
+    { t: "UK AI WARNING", d: "WATCHES VS META MUSE AI" },
+    { t: "SARKOZY TO STAND TRIAL 2027", d: "WITNESS-TAMPERING CASE" },
+    { t: "LONDON MUSEUM REOPENS", d: "VICTORIAN HALL SATURDAY" },
+  ]},
+  { name: "AMERICAS", c: GREEN, x: 593, w: 189, items: [
+    { t: "MISSISSIPPI PLANE CRASH", d: "6 DEAD, FAMILY OF 6" },
+    { t: "IOWA BLAST: 4,400 KG", d: "20-MILE SHELTER, NO LEAD FOUND" },
+    { t: "VENEZUELA DEBT: $237.5BN", d: "242% OF GDP (DISCLOSED TUE)" },
+    { t: "CIA NETWORK HACKED", d: "OSINT HIT, CHINA SUSPECTED" },
+    { t: "DOJ CHARGES 800+ IN SCAMS", d: "400 CASES WORLDWIDE" },
+    { t: "NSA NETWORK DOWN FOR DAYS", d: "BAD UPDATE, NOT A HACK" },
+    { t: "TRUMP: FUNDING IRAN WAR PREP", d: "THROUGH JANUARY" },
+    { t: "MEASLES", d: "CDC: 9 US DEATHS IN 2026" },
+  ]},
+  { name: "GLOBAL & SPORT", c: BROWN, x: 795, w: 213, items: [
+    { t: "UKRAINE NEEDS EUR 115BN", d: "EUR 25BN GAP FOR 2027" },
+    { t: "RUSSIAN WAR DEAD 490,334+", d: "LEAKED DATA, UP TO 700K" },
+    { t: "LANDMINE DEATHS 5-YEAR HIGH", d: "GLOBAL TOLL RISES" },
+    { t: "WHO: END CUBA FUEL BLOCKADE", d: "CHIEF URGES US" },
+    { t: "MALAYSIA RETURNS REFUGEES", d: "THOUSANDS TO MYANMAR" },
+    { t: "AIRPORTS COURT PRIVATE CASH", d: "EXPANSION FUNDING" },
+    { t: "NBA: NETS 104, BUCKS 97", d: "RANDLE 28 PTS, CUP WIN" },
+    { t: "MLB SUES PLAYERS' UNION", d: "38-PAGE LOCKOUT COMPLAINT" },
+  ]},
+];
+function briefs(): void {
+  for (const col of COLS) {
+    drawText(col.name, col.x, 566, 2, col.c);
+    fillRect(col.x, 582, col.w, 2, col.c);
+    let y = 590;
+    for (const b of col.items) {
+      textBox(b.t, col.x, y, col.w, 1, 1, INK, 9);
+      textBox(b.d, col.x, y + 9, col.w, 1, 1, GREY, 9);
+      y += 27;
+    }
+  }
+}
 
-// ---------------------------------------------------------------- output
-const outDir = (() => {
-  const ai = process.argv.indexOf('--output');
-  if (ai >= 0 && process.argv[ai + 1]) return process.argv[ai + 1];
-  return process.env.MAKEFUN_OUTPUT_DIR || '/output';
-})();
-mkdirSync(outDir, { recursive: true });
-const png = encodePNG(W, H, img);
-writeFileSync(join(outDir, 'entry.png'), png);
-console.log('TRUNCATIONS: ' + truncations);
-console.log(`WROTE ${png.length} bytes to ${outDir}/entry.png`);
+// ---------- header / heroes text / why / footer ----------
+function header(): void {
+  fillRect(0, 0, 1024, 52, NAVY);
+  drawText("THE WEDNESDAY WIRE", 16, 4, 4, WHITE);
+  drawText("WEDNESDAY 25 NOVEMBER 2026", 16, 36, 2, YELLOW);
+  fillRect(830, 8, 178, 36, RED);
+  drawTextC("50 STORIES", 919, 15, 3, WHITE);
+}
+function heroText(): void {
+  // H1
+  drawText("TRUMP PROPOSES", 12, 218, 3, INK);
+  drawText("NEW TARIFFS ON", 12, 244, 3, INK);
+  drawText("14 ECONOMIES", 12, 270, 3, INK);
+  drawText("CHINA 20% (40% IF TRUCE FAILS)", 12, 300, 1, GREY);
+  drawText("VIETNAM 20%/35% • INDIA 17%/25% • EU 15%", 12, 311, 1, GREY);
+  // H2
+  drawText("CAIRO TANKER FIRE", 353, 218, 3, INK);
+  drawText("KILLS 31", 353, 244, 3, INK);
+  // H3 — re-wrapped v5: no single word dangles alone
+  drawText("CHINA SENDS", 694, 218, 3, INK);
+  drawText("FIRST PAKISTANI", 694, 244, 3, INK);
+  drawText("INTO ORBIT", 694, 270, 3, INK);
+  // why-it-matters band
+  fillRect(0, 330, 1024, 46, WHYBG);
+  const whys: Array<[number, string, string]> = [
+    [12, "US HOUSEHOLDS PAY $900 A YEAR UNDER NEW DUTIES", ""],
+    [353, "27 VEHICLES BURNED, RING ROAD SHUT AFTER BLAST", "CAUSE: CAR HIT TANKER, IT OVERTURNED AND CAUGHT FIRE"],
+    [694, "FIRST FOREIGNER ABOARD TIANGONG STATION", "CREW: TANG HONGBO • WU YI • ZEESHAN ALI"],
+  ];
+  for (const [x, line1, line2] of whys) {
+    drawText("WHY IT MATTERS", x, 335, 1, RED);
+    drawText(line1, x, 346, 1, INK);
+    if (line2) drawText(line2, x, 358, 1, GREY);
+  }
+}
+function footer(): void {
+  fillRect(0, 866, 1024, 158, NAVY);
+  drawText("CLAIMED VS CONFIRMED", 16, 880, 2, YELLOW);
+  drawText("CAIRO 31/21 CONFIRMED NEXT MORNING • BOGOR 9/17 IS THE 25 NOV FIGURE", 16, 902, 1, WHITE);
+  drawText("HONG KONG FIRE IS 2025 ANNIVERSARY, NOT A NEW FIRE • VENEZUELA DEBT DISCLOSED TUE 24, REPORTED WED 25", 16, 914, 1, WHITE);
+  // date check box
+  fillRect(700, 878, 308, 2, GOLD); fillRect(700, 940, 308, 2, GOLD);
+  fillRect(700, 878, 2, 64, GOLD); fillRect(1006, 878, 2, 64, GOLD);
+  drawText("DATE CHECK:", 720, 888, 2, YELLOW);
+  drawText("WED 25 NOV 2026", 716, 910, 3, YELLOW);
+  // markets strip, sources, tagline — spaced so the last line ends ~1009
+  fillRect(16, 952, 992, 1, [90, 110, 150, 255]);
+  drawText("DOW 50,182.95 +0.33% • S&P 7,182.78 -0.25% • NASDAQ 23,585.80 -0.62% • KOSPI -6.16% • BRENT $93.60 • GOLD $3,598.10 • BITCOIN $60,200.94 • 10-YR 4.85%", 16, 960, 1, YELLOW);
+  drawText("SOURCES: REUTERS • AP • BBC • NYT • ESPN • OFGEM • PIB • AL JAZEERA • MARKETS CLOSED THU 26 NOV (THANKSGIVING); FRI HALF-DAY", 16, 980, 1, [200, 200, 200, 255]);
+  drawText("50 STORIES • TARIFF LEAD • WHY IT MATTERS • EVERY STORY DATE-CHECKED FOR WED 25 NOV 2026", 16, 1002, 1, [200, 200, 200, 255]);
+}
+
+// ---------- main ----------
+function main(): void {
+  fillRect(0, 0, W, H, PAPER);
+  header();
+  hero1(); hero2(); hero3();
+  heroText();
+  mid1(); mid2(); mid3(); mid4(); mid5(); mid6();
+  midText();
+  briefs();
+  footer();
+  const args = process.argv.slice(2);
+  let outDir = process.env.MAKEFUN_OUTPUT_DIR || "/output";
+  const oi = args.indexOf("--output");
+  if (oi >= 0 && args[oi + 1]) outDir = args[oi + 1];
+  mkdirSync(outDir, { recursive: true });
+  const png = encodePNG();
+  const path = outDir + "/entry.png";
+  writeFileSync(path, png);
+  console.log("TRUNCATIONS: " + TRUNCATIONS);
+  console.log("WROTE " + png.length + " bytes to " + path);
+}
+main();
